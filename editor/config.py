@@ -1,0 +1,14 @@
+WINDOW_WIDTH = 1000
+WINDOW_HEIGHT = 700
+BG_COLOR = "#f0f0f0"
+CANVAS_BG = "white"
+ACTIVE_TOOL_COLOR = "#a0a0a0"
+
+TOOL_SELECT = "select"
+TOOL_LINE = "line"
+TOOL_RECT = "rect"
+TOOL_OVAL = "oval"
+TOOL_PEN = "pen"
+
+DEFAULT_COLOR = "black"
+DEFAULT_LINE_WIDTH = 2
