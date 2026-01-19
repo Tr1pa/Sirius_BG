@@ -1,6 +1,18 @@
+import os
+import sys
+
 # размеры окна при запуске
 WINDOW_WIDTH = 1200
 WINDOW_HEIGHT = 800
+
+def resource_path(relative_path):
+    try:
+        # PyInstaller создает temp папку и хранит путь в _MEIPASS
+        base_path = sys._MEIPASS
+    except Exception:
+        base_path = os.path.abspath(".")
+
+    return os.path.join(base_path, relative_path)
 
 # путь к иконке, должна лежать рядом с файлом запуска
 ICON_PATH = "Sirius_BG\editor\icon.ico"
