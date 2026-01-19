@@ -1,14 +1,18 @@
-WINDOW_WIDTH = 1000
-WINDOW_HEIGHT = 700
-BG_COLOR = "#f0f0f0"
-CANVAS_BG = "white"
-ACTIVE_TOOL_COLOR = "#a0a0a0"
+# размеры окна при запуске
+WINDOW_WIDTH = 1200
+WINDOW_HEIGHT = 800
 
-TOOL_SELECT = "select"
-TOOL_LINE = "line"
-TOOL_RECT = "rect"
-TOOL_OVAL = "oval"
-TOOL_PEN = "pen"
+# путь к иконке, должна лежать рядом с файлом запуска
+ICON_PATH = "Sirius_BG\editor\icon.ico"
 
-DEFAULT_COLOR = "black"
-DEFAULT_LINE_WIDTH = 2
+# константы для инструментов
+TOOL_SELECT = "select"  # выбор и перемещение
+TOOL_PEN = "pen"        # свободное рисование
+TOOL_LINE = "line"      # прямая линия
+TOOL_RECT = "rect"      # прямоугольник
+TOOL_OVAL = "oval"      # овал/круг
+
+# настройки рисования по умолчанию
+DEFAULT_COLOR = "#000000"  # черный цвет
+DEFAULT_LINE_WIDTH = 2     # толщина линии
+DEFAULT_FILL = False       # заливка выключена (bug - не работает)

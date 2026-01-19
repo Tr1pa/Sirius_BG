@@ -1,84 +1,186 @@
-import tkinter as tk
-from tkinter import ttk
+from PySide6.QtWidgets import QTreeWidget, QTreeWidgetItem, QMenu, QWidget, QVBoxLayout, QLabel, QAbstractItemView
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QIcon
 
-class LayerPanel(tk.Frame):
-    def __init__(self, parent, on_layer_change, on_visibility_change):
-        super().__init__(parent, width=250, bg="#e0e0e0")
-        self.pack_propagate(False)
+class LayerTree(QTreeWidget):
+    """ кастомное дерево чтобы ловить дроп слоев """
+    z_order_changed = Signal()
+
+    def __init__(self):
+        super().__init__()
+        self.setHeaderLabels(["Имя", "👁"])
+        self.setColumnWidth(0, 180)
+        self.setColumnWidth(1, 40)
         
-        self.on_layer_change = on_layer_change
-        self.on_visibility_change = on_visibility_change
+        # включаем перетаскивание
+        self.setDragEnabled(True)
+        self.setAcceptDrops(True)
+        self.setDragDropMode(QAbstractItemView.InternalMove)
+        self.setSelectionMode(QAbstractItemView.SingleSelection)
+
+    def dropEvent(self, event):
+        # сначала перемещаем
+        super().dropEvent(event)
+        # потом порядок изменился
+        self.z_order_changed.emit()
+
+class LayerPanel(QWidget):
+    active_layer_changed = Signal(str)
+
+    def __init__(self, canvas_view):
+        super().__init__()
+        self.canvas_view = canvas_view
+        
+        self.layout = QVBoxLayout(self)
+        self.layout.setContentsMargins(0,0,0,0)
+        
+        self.layout.addWidget(QLabel("Слои (Drag&Drop)"))
+
+        # создаем наше дерево
+        self.tree = LayerTree()
+        self.tree.z_order_changed.connect(self.update_scene_z_order)
+        self.tree.itemSelectionChanged.connect(self.on_selection_change)
+        self.tree.itemClicked.connect(self.on_item_clicked)
+        self.tree.customContextMenuRequested.connect(self.show_context_menu)
+        self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
+
+        self.layout.addWidget(self.tree)
         
         self.layer_counter = 0
-        self.layers_data = {}
+        self.create_layer("Холст")
 
-        tk.Label(self, text="Слои и Объекты", bg="#e0e0e0", font=("Arial", 10, "bold")).pack(pady=5)
-
-        self.tree = ttk.Treeview(self, columns=("visible",), selectmode="browse", height=20)
-        self.tree.heading("#0", text="Имя")
-        self.tree.column("#0", width=140, anchor="w")
-        self.tree.heading("visible", text="👁")
-        self.tree.column("visible", width=40, anchor="center")
-
-        self.tree.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-        
-        scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscroll=scrollbar.set)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-
-        self.tree.bind("<<TreeviewSelect>>", self.on_select)
-        self.tree.bind("<Button-1>", self.on_click)
-
-        btn_frame = tk.Frame(self, bg="#e0e0e0")
-        btn_frame.pack(fill=tk.X, padx=5, pady=5)
-        tk.Button(btn_frame, text="+ Слой", command=self.add_layer).pack(fill=tk.X)
-
-        self.add_layer()
-
-    def add_layer(self):
+    def create_layer(self, name=None):
         self.layer_counter += 1
-        layer_name = f"Слой {self.layer_counter}"
-        layer_tag = f"layer_{self.layer_counter}"
+        if not name: name = f"Слой {self.layer_counter}"
+        layer_id = f"layer_{self.layer_counter}"
         
-        self.layers_data[layer_tag] = {"visible": True, "name": layer_name}
-        self.tree.insert("", 0, iid=layer_tag, text=layer_name, values=("👁",), open=True)
-        self.tree.selection_set(layer_tag)
-        self.on_layer_change(layer_tag)
+        item = QTreeWidgetItem(self.tree)
+        item.setText(0, name)
+        item.setText(1, "👁")
+        item.setData(0, Qt.UserRole, layer_id) # храним id скрытым
+        item.setFlags(item.flags() | Qt.ItemIsEditable) # можно переименовать
+        
+        # вставляем всегда наверх
+        self.tree.insertTopLevelItem(0, item)
+        self.tree.setCurrentItem(item)
+        
+        self.update_scene_z_order()
+        return layer_id
 
-    def add_object_to_layer(self, layer_tag, obj_id, obj_type):
-        item_iid = f"obj_{obj_id}"
-        name = f"{obj_type} #{obj_id}"
-        if self.tree.exists(layer_tag):
-            self.tree.insert(layer_tag, "end", iid=item_iid, text=name, values=("",))
+    def add_object_item(self, layer_id, gfx_item):
+        # ищем нужный слой по id
+        root = self.tree.invisibleRootItem()
+        layer_node = None
+        for i in range(root.childCount()):
+            item = root.child(i)
+            if item.data(0, Qt.UserRole) == layer_id:
+                layer_node = item
+                break
+        
+        if layer_node:
+            # создаем запись об объекте
+            obj_name = f"Obj {type(gfx_item).__name__.replace('QGraphics', '').replace('Item', '')}"
+            obj_item = QTreeWidgetItem()
+            obj_item.setText(0, obj_name)
+            obj_item.setData(0, Qt.UserRole, gfx_item)
+            
+            # добавляем внутрь папки слоя
+            layer_node.insertChild(0, obj_item)
+            layer_node.setExpanded(True)
+            
+            self.update_scene_z_order()
 
-    def remove_object(self, obj_id):
-        item_iid = f"obj_{obj_id}"
-        if self.tree.exists(item_iid):
-            self.tree.delete(item_iid)
+    def update_scene_z_order(self):
+        """ пересчет глубины отрисовки """
+        root = self.tree.invisibleRootItem()
+        total_layers = root.childCount()
+        
+        # бежим по слоям сверху вниз
+        for i in range(total_layers):
+            layer_item = root.child(i)
+            # чем выше слой в списке, тем больше Z
+            base_z = (total_layers - i) * 10000 
+            
+            # теперь по объектам внутри слоя
+            obj_count = layer_item.childCount()
+            for j in range(obj_count):
+                obj_item = layer_item.child(j)
+                gfx_item = obj_item.data(0, Qt.UserRole)
+                
+                if gfx_item:
+                    final_z = base_z + (obj_count - j)
+                    gfx_item.setZValue(final_z)
 
-    def on_select(self, event):
-        selected_iid = self.tree.focus()
-        if not selected_iid:
-            return
-        if selected_iid.startswith("layer_"):
-            self.on_layer_change(selected_iid)
+    def on_selection_change(self):
+        # кликнули в дерево - ищем что выбрали
+        items = self.tree.selectedItems()
+        if not items: return
+        item = items[0]
+        data = item.data(0, Qt.UserRole)
+        
+        if isinstance(data, str) and data.startswith("layer_"):
+            # это слой
+            self.active_layer_changed.emit(data)
+            self.canvas_view.scene().clearSelection()
         else:
-            parent_layer = self.tree.parent(selected_iid)
-            self.on_layer_change(parent_layer)
+            # это объект
+            gfx_item = data
+            if gfx_item:
+                gfx_item.setSelected(True)
+                parent = item.parent()
+                if parent:
+                    self.active_layer_changed.emit(parent.data(0, Qt.UserRole))
 
-    def on_click(self, event):
-        region = self.tree.identify_region(event.x, event.y)
-        if region == "cell":
-            column = self.tree.identify_column(event.x)
-            if column == "#1":
-                item_iid = self.tree.identify_row(event.y)
-                if item_iid.startswith("layer_"):
-                    self.toggle_layer_visibility(item_iid)
+    def on_item_clicked(self, item, column):
+        # клик по глазику (bug)
+        if column == 1:
+            is_visible = item.text(1) == "👁"
+            new_state = not is_visible
+            item.setText(1, "👁" if new_state else "🚫")
+            
+            data = item.data(0, Qt.UserRole)
+            if isinstance(data, str) and data.startswith("layer_"):
+                # прячем все внутри слоя
+                count = item.childCount()
+                for i in range(count):
+                    child = item.child(i)
+                    gfx = child.data(0, Qt.UserRole)
+                    if gfx: gfx.setVisible(new_state)
+            else:
+                # прячем конкретный объект
+                if data: data.setVisible(new_state)
 
-    def toggle_layer_visibility(self, layer_tag):
-        is_visible = self.layers_data[layer_tag]["visible"]
-        new_state = not is_visible
-        self.layers_data[layer_tag]["visible"] = new_state
-        icon = "👁" if new_state else "🚫"
-        self.tree.set(layer_tag, "visible", icon)
-        self.on_visibility_change(layer_tag, new_state)
+    def show_context_menu(self, pos):
+        # менюшка на пкм
+        item = self.tree.itemAt(pos)
+        menu = QMenu()
+        
+        if item is None:
+            menu.addAction("Новый слой", lambda: self.create_layer())
+        else:
+            data = item.data(0, Qt.UserRole)
+            if isinstance(data, str) and data.startswith("layer_"):
+                menu.addAction("Новый слой", lambda: self.create_layer())
+                menu.addAction("Переименовать", lambda: self.tree.editItem(item, 0))
+                menu.addSeparator()
+                menu.addAction("Удалить слой", lambda: self.delete_layer(item))
+            else:
+                menu.addAction("Удалить", lambda: self.delete_object(item))
+        
+        menu.exec(self.tree.mapToGlobal(pos))
+
+    def delete_layer(self, item):
+        layer_id = item.data(0, Qt.UserRole)
+        scene = self.canvas_view.scene()
+        # удаляем графику со сцены
+        for i in range(item.childCount()):
+            gfx = item.child(i).data(0, Qt.UserRole)
+            if gfx: scene.removeItem(gfx)
+        # удаляем строку из дерева
+        (item.parent() or self.tree.invisibleRootItem()).removeChild(item)
+
+    def delete_object(self, item):
+        gfx_item = item.data(0, Qt.UserRole)
+        if gfx_item:
+            self.canvas_view.scene().removeItem(gfx_item)
+        (item.parent() or self.tree.invisibleRootItem()).removeChild(item)

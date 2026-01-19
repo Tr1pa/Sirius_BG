@@ -1,114 +1,167 @@
-import tkinter as tk
-from tkinter import colorchooser
-import config
-from layers import LayerPanel
-from canvas_manager import EditorCanvas
-import file_utils
+import sys
+import os
+from PySide6.QtWidgets import (QApplication, QMainWindow, QToolBar, QColorDialog, 
+                               QSpinBox, QCheckBox, QFileDialog, QMessageBox, QDockWidget)
+from PySide6.QtGui import QAction, QIcon, QImage, QPainter, QColor, QBrush
+from PySide6.QtCore import Qt, QSize
 
-class VectorEditorApp(tk.Tk):
+import config
+from canvas_manager import EditorScene, EditorView
+from layers import LayerPanel
+
+class VectorEditor(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.title("Python Vector Paint Pro")
-        self.geometry(f"{config.WINDOW_WIDTH}x{config.WINDOW_HEIGHT}")
-        self.configure(bg=config.BG_COLOR)
+        self.setWindowTitle("PySide6 Vector Editor")
+        self.resize(config.WINDOW_WIDTH, config.WINDOW_HEIGHT)
         
-        self.tool_buttons = {} 
+        # ставим иконку если файл существует
+        if os.path.exists(config.ICON_PATH):
+            self.setWindowIcon(QIcon(config.ICON_PATH))
+
+        self._init_ui()
+
+    def _init_ui(self):
+        # собираем сцену
+        self.scene = EditorScene()
+        self.view = EditorView(self.scene)
+        self.setCentralWidget(self.view)
+
+        # панель слоев справа
+        self.layers_dock = QDockWidget("Слои", self)
+        self.layers_dock.setAllowedAreas(Qt.RightDockWidgetArea | Qt.LeftDockWidgetArea)
+        self.layer_panel = LayerPanel(self.view)
+        self.layers_dock.setWidget(self.layer_panel)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.layers_dock)
+
+        # тулбар сверху
+        self.toolbar = QToolBar("Tools")
+        self.toolbar.setIconSize(QSize(16, 16))
+        self.addToolBar(self.toolbar)
+
+        # кнопки инструментов
+        self._add_tool_action("Select", config.TOOL_SELECT)
+        self._add_tool_action("Pen", config.TOOL_PEN)
+        self._add_tool_action("Line", config.TOOL_LINE)
+        self._add_tool_action("Rect", config.TOOL_RECT)
+        self._add_tool_action("Oval", config.TOOL_OVAL)
+
+        self.toolbar.addSeparator()
+
+        # кнопка сохранения
+        save_act = QAction("💾 Save PNG", self)
+        save_act.triggered.connect(self.save_image)
+        self.toolbar.addAction(save_act)
+
+        self.toolbar.addSeparator()
+
+        # выбор цвета
+        self.color_btn = QAction("Color", self)
+        self.color_btn.triggered.connect(self.choose_color)
+        self.toolbar.addAction(self.color_btn)
+
+        # толщина линии
+        self.spin_width = QSpinBox()
+        self.spin_width.setRange(1, 50)
+        self.spin_width.setValue(config.DEFAULT_LINE_WIDTH)
+        self.spin_width.valueChanged.connect(self.change_width)
+        self.toolbar.addWidget(self.spin_width)
+
+        # галочка заливки
+        self.check_fill = QCheckBox("Fill")
+        self.check_fill.stateChanged.connect(self.toggle_fill)
+        self.toolbar.addWidget(self.check_fill)
+
+        # связываем сигналы между панелью и холстом
+        self.view.item_created.connect(self.layer_panel.add_object_item)
+        self.layer_panel.active_layer_changed.connect(self.set_canvas_layer)
         
-        self._setup_ui()
+        # обновляем интерфейс если кликнули на объект
+        self.view.item_selected.connect(self.on_item_selected_update_ui)
 
-    def _setup_ui(self):
-        toolbar = tk.Frame(self, bg="#d0d0d0", height=40)
-        toolbar.pack(side=tk.TOP, fill=tk.X)
+        # ставим первый слой активным
+        self.view.current_layer_id = "layer_1"
 
-        save_btn = tk.Button(toolbar, text="Save PNG", bg="#ddffdd", 
-                             command=lambda: file_utils.save_canvas_as_png(self.canvas))
-        save_btn.pack(side=tk.LEFT, padx=5, pady=5)
+    def _add_tool_action(self, name, mode):
+        # вспомогательная функция для добавления кнопки
+        action = QAction(name, self)
+        action.setCheckable(True)
+        action.setData(mode)
+        action.triggered.connect(lambda: self.set_tool(action))
+        self.toolbar.addAction(action)
+        if mode == config.TOOL_SELECT:
+            action.setChecked(True)
 
-        tk.Frame(toolbar, width=2, bg="gray").pack(side=tk.LEFT, fill=tk.Y, padx=5)
+    def set_tool(self, action):
+        # переключалка режимов (радиокнопки)
+        for act in self.toolbar.actions():
+            if act.isCheckable() and act != action:
+                act.setChecked(False)
+        action.setChecked(True)
+        self.view.set_tool(action.data())
 
-        tools = [
-            ("Select", config.TOOL_SELECT),
-            ("Pen", config.TOOL_PEN),
-            ("Line", config.TOOL_LINE),
-            ("Rect", config.TOOL_RECT),
-            ("Oval", config.TOOL_OVAL)
-        ]
-
-        for text, mode in tools:
-            btn = tk.Button(toolbar, text=text, 
-                            command=lambda m=mode: self.set_active_tool(m))
-            btn.pack(side=tk.LEFT, padx=2, pady=5)
-            self.tool_buttons[mode] = btn
-
-        tk.Frame(toolbar, width=20, bg="#d0d0d0").pack(side=tk.LEFT)
-
-        tk.Label(toolbar, text="Width:", bg="#d0d0d0").pack(side=tk.LEFT)
-        self.width_scale = tk.Scale(toolbar, from_=1, to=20, orient=tk.HORIZONTAL, 
-                                    bg="#d0d0d0", length=100, command=self.change_width)
-        self.width_scale.set(config.DEFAULT_LINE_WIDTH)
-        self.width_scale.pack(side=tk.LEFT, padx=5)
-
-        color_btn = tk.Button(toolbar, text="Color", bg="black", fg="white", command=self.choose_color)
-        color_btn.pack(side=tk.LEFT, padx=5, pady=5)
-        self.color_btn_ref = color_btn
-
-        self.fill_var = tk.BooleanVar(value=False)
-        fill_check = tk.Checkbutton(toolbar, text="Fill", variable=self.fill_var, 
-                                    bg="#d0d0d0", command=self.toggle_fill)
-        fill_check.pack(side=tk.LEFT, padx=5)
-
-        del_btn = tk.Button(toolbar, text="x", bg="#ffdddd", 
-                            command=lambda: self.canvas.delete_selection())
-        del_btn.pack(side=tk.RIGHT, padx=5, pady=5)
-
-        main_area = tk.Frame(self)
-        main_area.pack(fill=tk.BOTH, expand=True)
-
-        self.canvas = EditorCanvas(
-            main_area,
-            on_object_created_callback=None,
-            on_object_deleted_callback=None
-        )
-        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        self.layer_panel = LayerPanel(
-            main_area,
-            on_layer_change=self.on_active_layer_change,
-            on_visibility_change=self.on_visibility_toggle
-        )
-        self.layer_panel.pack(side=tk.RIGHT, fill=tk.Y)
-        
-        self.canvas.on_object_created = self.layer_panel.add_object_to_layer
-        self.canvas.on_object_deleted = self.layer_panel.remove_object
-
-        self.set_active_tool(config.TOOL_PEN)
-
-    def set_active_tool(self, tool_mode):
-        self.canvas.set_tool(tool_mode)
-        for mode, btn in self.tool_buttons.items():
-            if mode == tool_mode:
-                btn.config(bg=config.ACTIVE_TOOL_COLOR, relief=tk.SUNKEN)
-            else:
-                btn.config(bg="SystemButtonFace", relief=tk.RAISED)
-
-    def toggle_fill(self):
-        self.canvas.set_fill(self.fill_var.get())
-
-    def change_width(self, val):
-        self.canvas.set_line_width(int(val))
-
-    def on_active_layer_change(self, layer_tag):
-        self.canvas.set_layer(layer_tag)
-
-    def on_visibility_toggle(self, layer_tag, is_visible):
-        self.canvas.toggle_layer_visibility(layer_tag, is_visible)
+    def set_canvas_layer(self, layer_id):
+        self.view.current_layer_id = layer_id
 
     def choose_color(self):
-        color = colorchooser.askcolor()[1]
-        if color:
-            self.canvas.set_color(color)
-            self.color_btn_ref.config(bg=color)
+        col = QColorDialog.getColor()
+        if col.isValid():
+            self.view.current_color = col
+            # красим выделенное
+            for item in self.scene.selectedItems():
+                if hasattr(item, "setPen"):
+                    pen = item.pen()
+                    pen.setColor(col)
+                    item.setPen(pen)
+                # если заливка активна, красим и ее
+                if hasattr(item, "setBrush") and self.view.use_fill:
+                     item.setBrush(col)
+
+    def change_width(self, val):
+        self.view.current_width = val
+        for item in self.scene.selectedItems():
+            if hasattr(item, "setPen"):
+                pen = item.pen()
+                pen.setWidth(val)
+                item.setPen(pen)
+
+    def toggle_fill(self, state):
+        filled = (state == Qt.Checked)
+        self.view.use_fill = filled
+        
+        # обновляем выделенное
+        for item in self.scene.selectedItems():
+            if hasattr(item, "setBrush"):
+                if filled:
+                    item.setBrush(self.view.current_color)
+                else:
+                    item.setBrush(Qt.NoBrush)
+
+    def on_item_selected_update_ui(self, item):
+        # если выбрали объект - проверяем есть ли у него заливка
+        if item and hasattr(item, "brush"):
+            brush = item.brush()
+            is_filled = brush.style() != Qt.NoBrush
+            self.check_fill.blockSignals(True)
+            self.check_fill.setChecked(is_filled)
+            self.view.use_fill = is_filled
+            self.check_fill.blockSignals(False)
+
+    def save_image(self):
+        # диалог сохранения
+        path, _ = QFileDialog.getSaveFileName(self, "Save Image", "", "PNG Files (*.png)")
+        if path:
+            # рендерим сцену в картинку
+            image = QImage(self.scene.sceneRect().size().toSize(), QImage.Format_ARGB32)
+            image.fill(Qt.transparent)
+            painter = QPainter(image)
+            self.scene.render(painter)
+            painter.end()
+            image.save(path)
+            QMessageBox.information(self, "Success", "Image Saved!")
 
 if __name__ == "__main__":
-    app = VectorEditorApp()
-    app.mainloop()
+    app = QApplication(sys.argv)
+    window = VectorEditor()
+    window.show()
+    sys.exit(app.exec())
